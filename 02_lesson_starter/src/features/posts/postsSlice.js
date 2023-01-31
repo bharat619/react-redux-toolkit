@@ -1,14 +1,31 @@
-import { createSlice, nanoid, createAsyncThunk } from "@reduxjs/toolkit";
+import {
+  createSlice,
+  nanoid,
+  createAsyncThunk,
+  createSelector,
+  createEntityAdapter,
+} from "@reduxjs/toolkit";
 import { sub } from "date-fns";
 import axios from "axios";
 
 const POSTS_URL = "https://jsonplaceholder.typicode.com/posts";
 
-const initialState = {
-  posts: [],
+const postsAdapter = createEntityAdapter({
+  sortComparer: (a, b) => b.date.localeCompare(a.date),
+});
+
+const initialState = postsAdapter.getInitialState({
+  // posts: [],
+  // Notice the we got rid of posts empty array. Because our initial state
+  // (even if we  dont put anything for posts) will already returned the normalized object
+  // i.e. { id: [1,2,3], entities: { '1': {...}, '2': {...} }},
+
+  // status, error and count are just the extra states we are adding
+  // on top of adapter
   status: "idle", // idle | loading | succeeded |
   error: null,
-};
+  count: 0,
+});
 
 export const fetchPosts = createAsyncThunk("posts/fetchPosts", async () => {
   try {
@@ -91,17 +108,37 @@ const postsSlice = createSlice({
         };
       },
     },
+    // Before using createEntityAdapter
+    // reactionAdded(state, action) {
+    //   const { postId, reaction } = action.payload;
+    //   const existingPost = state.posts.find((post) => post.id === postId);
+    //   // This would mutate the state normally, but since we are inside
+    //   // createSlice, and ember will handle this, it will not mutate the state
+    //   // and everything still works fine
+    //   if (existingPost) {
+    //     existingPost.reactions[reaction]++;
+    //   } else {
+    //     existingPost.reactions[reaction] = 1;
+    //   }
+    // },
+    // increaseCount(state, action) {
+    //   state.count = state.count + 1;
+    // },
+
     reactionAdded(state, action) {
       const { postId, reaction } = action.payload;
-      const existingPost = state.posts.find((post) => post.id === postId);
-      // This would mutate the state normally, but since we are inside
-      // createSlice, and ember will handle this, it will not mutate the state
-      // and everything still works fine
+
+      // entities will be an object with post id as key,
+      const existingPost = state.entities[postId];
+
       if (existingPost) {
         existingPost.reactions[reaction]++;
       } else {
         existingPost.reactions[reaction] = 1;
       }
+    },
+    increaseCount(state, action) {
+      state.count = state.count + 1;
     },
   },
   // sometimes slice reducers needs to respond to other actions
@@ -134,7 +171,11 @@ const postsSlice = createSlice({
         });
 
         // Add fetched posts to the array
-        state.posts = state.posts.concat(loadedPosts);
+        // state.posts = state.posts.concat(loadedPosts);
+
+        // adaptor has its own methods. upsertMany takes in the sate
+        // and loaded posts
+        postsAdapter.upsertMany(state, loadedPosts);
       })
       .addCase(fetchPosts.rejected, (state, action) => {
         state.status = "failed";
@@ -151,7 +192,8 @@ const postsSlice = createSlice({
           coffee: 0,
         };
         console.log(action.payload);
-        state.posts.push(action.payload);
+        // state.posts.push(action.payload);
+        postsAdapter.addOne(state, action.payload);
       })
       .addCase(updatePost.fulfilled, (state, action) => {
         if (!action.payload?.id) {
@@ -161,7 +203,7 @@ const postsSlice = createSlice({
         const { id } = action.payload;
         action.payload.date = new Date().toISOString();
         const posts = state.posts.filter((post) => post.id !== id);
-        state.posts = [...posts, action.payload];
+        postsAdapter.upsertOne(state, action.payload``);
       })
       .addCase(deletePost.fulfilled, (state, action) => {
         if (!action.payload?.id) {
@@ -169,16 +211,40 @@ const postsSlice = createSlice({
           return;
         }
         const { id } = action.payload;
-        const posts = state.posts.filter((post) => post.id !== id);
-        state.posts = posts;
+        // const posts = state.posts.filter((post) => post.id !== id);
+        // state.posts = posts;
+
+        postsAdapter.removeOne(state, id);
       });
   },
 });
 
-export const selectAllPosts = (state) => state.posts.posts;
+// getSelectors creates these selectors and we rename them
+// with aliases using destructuring
+
+export const {
+  selectAll: selectAllPosts,
+  selectById: selectPostById,
+  selectIds: selectPostIds,
+  // Pass in a selector that returns the posts slice of state
+} = postsAdapter.getSelectors((state) => {
+  console.log(state);
+  return state.posts;
+});
+
 export const getPostsStatus = (state) => state.posts.status;
 export const getPostsError = (state) => state.posts.error;
-export const selectPostById = (state, postId) =>
-  state.posts.posts.find((post) => post.id === postId);
-export const { postAdded, reactionAdded } = postsSlice.actions; // actions are got from createSlice above
+export const getCount = (state) => state.posts.count;
+
+// createSelector accepts one or more input functions
+// The values returned from these functions are dependencies.
+// They provide input parameters for the output function of our memoized selector.
+// i.e. if selectAllPosts returns a different result or the anonymous function
+// returns a different userId, only then the posts.filter is re-computed
+export const selectPostByUser = createSelector(
+  [selectAllPosts, (state, userId) => userId],
+  (posts, userId) => posts.filter((post) => post.userId === userId)
+);
+
+export const { postAdded, reactionAdded, increaseCount } = postsSlice.actions; // actions are got from createSlice above
 export default postsSlice.reducer;
